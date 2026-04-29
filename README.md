@@ -26,7 +26,7 @@ A real-time AI meeting assistant that transcribes your microphone and produces a
 | Styling | Tailwind CSS v4 |
 | Language | TypeScript |
 | Transcription | Deepgram browser SDK (direct streaming) |
-| Summarization | Anthropic Claude via API route |
+| Summarization | Claude Sonnet (interim) + Claude Opus w/ thinking (final) |
 | Schema validation | Zod |
 | Document export | docx |
 | Hosting | Vercel |
