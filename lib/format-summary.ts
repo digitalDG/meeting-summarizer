@@ -1,4 +1,4 @@
-import type { MeetingSummary } from "./schemas";
+import type { MeetingSummary } from "./schemas.js";
 
 // Markdown — used for Copy to clipboard
 export function formatSummaryAsText(s: MeetingSummary): string {

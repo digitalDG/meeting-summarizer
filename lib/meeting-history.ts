@@ -1,4 +1,4 @@
-import type { MeetingSummary } from "./schemas";
+import type { MeetingSummary } from "./schemas.js";
 
 export interface HistoryEntry {
   id: string;

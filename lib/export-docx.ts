@@ -11,8 +11,8 @@ import {
   BorderStyle,
   ShadingType,
 } from "docx";
-import type { MeetingSummary } from "./schemas";
-import type { HistoryEntry } from "./meeting-history";
+import type { MeetingSummary } from "./schemas.js";
+import type { HistoryEntry } from "./meeting-history.js";
 
 // Column widths in twentieths of a point (twips). 9638 = ~6.7 inches total.
 const COL_TASK = 4500;

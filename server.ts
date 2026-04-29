@@ -31,6 +31,7 @@ if (!DEEPGRAM_API_KEY) throw new Error("DEEPGRAM_API_KEY is not set");
 // Next.js
 // ---------------------------------------------------------------------------
 const dev = process.env.NODE_ENV !== "production";
+// @ts-ignore Next.js CJS entry loses call signatures under NodeNext moduleResolution
 const app = next({ dev });
 const handle = app.getRequestHandler();
 
