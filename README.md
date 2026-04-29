@@ -1,6 +1,6 @@
 # Meeting Summarizer
 
-A real-time AI meeting assistant that transcribes your microphone and produces a structured summary as you speak. Built with Next.js, Deepgram, and Claude.
+A real-time AI meeting assistant that transcribes your microphone and produces a structured summary as you speak. Built with Next.js, Deepgram, and Claude. Deployed on Vercel.
 
 ![screenshot placeholder](docs/screenshot.png)
 
@@ -25,11 +25,11 @@ A real-time AI meeting assistant that transcribes your microphone and produces a
 | Framework | Next.js 16 (App Router) |
 | Styling | Tailwind CSS v4 |
 | Language | TypeScript |
-| Transcription | Deepgram streaming WebSocket |
-| Summarization | Anthropic Claude (claude-sonnet-4-5) |
+| Transcription | Deepgram browser SDK (direct streaming) |
+| Summarization | Anthropic Claude via API route |
 | Schema validation | Zod |
 | Document export | docx |
-| Runtime | Node.js + custom WebSocket server (`server.ts`) |
+| Hosting | Vercel |
 
 ## Getting Started
 
@@ -37,7 +37,7 @@ A real-time AI meeting assistant that transcribes your microphone and produces a
 
 - Node.js 18+
 - An [Anthropic API key](https://console.anthropic.com/)
-- A [Deepgram API key](https://console.deepgram.com/)
+- A [Deepgram API key](https://console.deepgram.com/) — must be **Member** or **Admin** role (required to issue short-lived browser tokens)
 
 ### Setup
 
@@ -59,10 +59,6 @@ cp .env.example .env
 ```env
 ANTHROPIC_API_KEY=your_anthropic_api_key_here
 DEEPGRAM_API_KEY=your_deepgram_api_key_here
-
-# Optional — defaults shown
-SUMMARY_INTERVAL_MS=30000   # how often to generate an interim summary (ms)
-MIN_WORDS_FOR_SUMMARY=50    # minimum transcript words before first summary
 ```
 
 ### Running locally
@@ -80,24 +76,36 @@ npm run build
 npm start
 ```
 
+## Deploying to Vercel
+
+1. Push the repo to GitHub
+2. Import the project in [vercel.com](https://vercel.com)
+3. Add `ANTHROPIC_API_KEY` and `DEEPGRAM_API_KEY` as environment variables
+4. Deploy — no additional configuration needed
+
 ## Architecture
 
-The app runs a Next.js frontend alongside a lightweight custom WebSocket server (`server.ts`) on the same port.
+The browser connects directly to Deepgram for real-time transcription using a short-lived token issued by the server. Summaries are generated server-side via a Next.js API route. No custom server required.
 
 ```
 Browser mic
-  └─ WebSocket ──► server.ts
-                    ├─ Deepgram streaming WebSocket (transcription)
-                    └─ Anthropic API (summarization)
-                         └─ WebSocket ──► Browser UI
+  └─ Deepgram browser SDK ──► Deepgram (transcription)
+                                    │ transcripts
+                                    ▼
+                             Browser (transcript buffer + timer)
+                                    │ POST /api/summarize
+                                    ▼
+                             Next.js API route ──► Anthropic Claude
+                                    │ summary JSON
+                                    ▼
+                             Browser UI
 ```
 
-- `server.ts` — HTTP + WebSocket server, proxies mic audio to Deepgram and triggers Claude summarization
-- `lib/deepgram.ts` — Deepgram streaming client
+- `app/api/deepgram-token/route.ts` — issues a 60-second Deepgram token for browser use
+- `app/api/summarize/route.ts` — calls Claude with the transcript, returns structured summary
 - `lib/summarizer.ts` — Claude prompt and Zod-validated structured output
 - `lib/schemas.ts` — shared `MeetingSummary` Zod schema
-- `lib/transcript-buffer.ts` — rolling transcript accumulation
-- `lib/ws-protocol.ts` — typed WebSocket message definitions
+- `lib/transcript-buffer.ts` — transcript accumulation (runs in the browser)
 - `components/MeetingRoom.tsx` — main UI orchestration
 - `components/SummaryPanel.tsx` — summary display, copy, email, export
 - `components/HistoryPanel.tsx` — history list, pagination, bulk operations
