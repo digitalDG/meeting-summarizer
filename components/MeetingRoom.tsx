@@ -248,7 +248,24 @@ export function MeetingRoom() {
 
       connection.on(LiveTranscriptionEvents.Open, () => {
         setConnState("recording");
-        setStatusMsg("");
+        setStatusMsg("Ready — speak now");
+        setTimeout(() => setStatusMsg(""), 3000);
+
+        // Brief ready tone so the user knows they can start speaking
+        try {
+          const ctx = new AudioContext();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.value = 880;
+          gain.gain.setValueAtTime(0.12, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.15);
+          osc.start(ctx.currentTime);
+          osc.stop(ctx.currentTime + 0.15);
+          osc.onended = () => ctx.close();
+        } catch { /* silently fail if AudioContext unavailable */ }
+
         summaryIntervalRef.current = setInterval(
           () => runSummary("incremental"),
           SUMMARY_INTERVAL_MS
@@ -405,7 +422,7 @@ export function MeetingRoom() {
             <span className="hidden sm:block text-slate-400 text-sm font-mono">{formattedTime}</span>
           )}
 
-          {statusMsg && !isRecording && (
+          {statusMsg && (
             <span className="hidden sm:block text-slate-500 text-xs max-w-36 md:max-w-48 truncate">
               {statusMsg}
             </span>
