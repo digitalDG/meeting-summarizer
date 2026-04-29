@@ -48,7 +48,7 @@ export class MeetingSummarizer {
     });
 
     const response = await this.client.messages.parse({
-      model: "claude-opus-4-7",
+      model: isFinal ? "claude-opus-4-7" : "claude-sonnet-4-6",
       max_tokens: isFinal ? 8192 : 4096,
       ...(isFinal ? { thinking: { type: "adaptive" as const } } : {}),
       system: [
