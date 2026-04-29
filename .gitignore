@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# environment variables
+.env
+.env.local
+.env.*.local
+
+# build output
+dist/
+
+# TypeScript build info
+tsconfig.tsbuildinfo
+
+# misc
+.DS_Store
+*.pem
+npm-debug.log*
+
+# Claude Code
+.claude/
