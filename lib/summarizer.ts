@@ -1,6 +1,6 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
-import { MeetingSummarySchema, type MeetingSummary } from "./schemas.js";
+import { MeetingSummarySchema, type MeetingSummary } from "./schemas";
 
 const SYSTEM_PROMPT = `You are an expert meeting analyst. Extract structured, actionable information from spoken meeting transcripts.
 
@@ -26,6 +26,11 @@ export class MeetingSummarizer {
 
   constructor(apiKey: string) {
     this.client = new Anthropic({ apiKey });
+  }
+
+  setContext(lastSummary: MeetingSummary | null, summarizedUpTo: number): void {
+    this.lastSummary = lastSummary;
+    this.summarizedUpTo = summarizedUpTo;
   }
 
   async summarize(fullTranscript: string, mode: SummarizeMode): Promise<SummaryResult> {

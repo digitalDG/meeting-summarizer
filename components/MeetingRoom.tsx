@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useRef, useCallback, useEffect } from "react";
+import { createClient, LiveTranscriptionEvents } from "@deepgram/sdk";
 import { LiveTranscript } from "./LiveTranscript";
 import { SummaryPanel } from "./SummaryPanel";
 import { HistoryPanel } from "./HistoryPanel";
-import { parseServerMessage } from "@/lib/ws-protocol";
+import { TranscriptBuffer } from "@/lib/transcript-buffer";
 import type { MeetingSummary } from "@/lib/schemas";
+import type { SummarizeMode } from "@/lib/summarizer";
 import {
   type HistoryEntry,
   loadHistory,
@@ -24,6 +26,7 @@ interface TranscriptLine {
 
 const SAMPLE_RATE = 16_000;
 const MIN_WORDS = 50;
+const SUMMARY_INTERVAL_MS = 30_000;
 
 export function MeetingRoom() {
   const [connState, setConnState] = useState<ConnectionState>("idle");
@@ -45,15 +48,25 @@ export function MeetingRoom() {
   const [showHistory, setShowHistory] = useState(false);
   const [viewingEntry, setViewingEntry] = useState<HistoryEntry | null>(null);
 
-  const wsRef = useRef<WebSocket | null>(null);
+  // Audio refs
   const audioCtxRef = useRef<AudioContext | null>(null);
   const workletNodeRef = useRef<AudioWorkletNode | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startTimeRef = useRef<number>(0);
+
+  // Session refs (safe to read inside stale closures)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const dgConnRef = useRef<any>(null);
+  const transcriptBufferRef = useRef(new TranscriptBuffer());
+  const summaryIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const isSummarizingRef = useRef(false);
+  const sessionEndedRef = useRef(false);
+  const prevSummaryRef = useRef<MeetingSummary | null>(null);
+  const summarizedUpToRef = useRef(0);
   const titleEditedRef = useRef(false);
   const savedRef = useRef(false);
-  const editableTitleRef = useRef(""); // always-current snapshot for use inside stale closures
+  const editableTitleRef = useRef("");
   useEffect(() => { editableTitleRef.current = editableTitle; }, [editableTitle]);
 
   // Load history on mount (client-side only)
@@ -99,55 +112,6 @@ export function MeetingRoom() {
     }
   }, [connState, summaryIsFinal, summary, editableTitle, currentMeetingId, wordCount, summaryLabel]);
 
-  const handleServerMessage = useCallback((raw: string) => {
-    const msg = parseServerMessage(raw);
-
-    switch (msg.type) {
-      case "connected":
-        setConnState("recording");
-        setStatusMsg("");
-        break;
-
-      case "transcript":
-        if (msg.isFinal) {
-          setLines((prev) => [...prev, { id: prev.length, text: msg.text }]);
-          setInterim("");
-          setWordCount((w) => w + msg.text.split(/\s+/).filter(Boolean).length);
-        } else {
-          setInterim(msg.text);
-        }
-        break;
-
-      case "summary":
-        setSummary(msg.data);
-        setSummaryLabel(msg.label);
-        setSummaryIsFinal(msg.isFinal);
-        setIsSummarizing(false);
-        setStatusMsg("");
-        // Sync title from Claude's inference only if the user hasn't manually set one
-        if (!titleEditedRef.current) {
-          setEditableTitle(msg.data.title);
-        }
-        break;
-
-      case "status":
-        setStatusMsg(msg.message);
-        if (msg.message.toLowerCase().includes("summar")) setIsSummarizing(true);
-        break;
-
-      case "error":
-        setStatusMsg(`Error: ${msg.message}`);
-        setIsSummarizing(false);
-        break;
-
-      case "done":
-        setConnState("done");
-        setIsSummarizing(false);
-        setStatusMsg("");
-        break;
-    }
-  }, []);
-
   const cleanup = useCallback(() => {
     workletNodeRef.current?.disconnect();
     workletNodeRef.current = null;
@@ -156,6 +120,77 @@ export function MeetingRoom() {
     micStreamRef.current?.getTracks().forEach((t) => t.stop());
     micStreamRef.current = null;
   }, []);
+
+  const runSummary = useCallback(async (mode: SummarizeMode) => {
+    if (isSummarizingRef.current) return;
+
+    const transcript = transcriptBufferRef.current.getFinalTranscript();
+    const wc = transcriptBufferRef.current.getWordCount();
+
+    if (mode === "incremental" && wc < MIN_WORDS) return;
+    if (!transcript.trim()) return;
+
+    isSummarizingRef.current = true;
+    setIsSummarizing(true);
+    setStatusMsg(mode === "final" ? "Generating final summary…" : `Summarizing ${wc} words…`);
+
+    try {
+      const res = await fetch("/api/summarize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          transcript,
+          mode,
+          prevSummary: prevSummaryRef.current,
+          summarizedUpTo: summarizedUpToRef.current,
+        }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Summarize failed");
+
+      prevSummaryRef.current = data.summary;
+      summarizedUpToRef.current = transcript.length;
+
+      setSummary(data.summary);
+      setSummaryLabel(mode === "final" ? "Final" : "Interim");
+      setSummaryIsFinal(mode === "final");
+      setStatusMsg("");
+
+      if (!titleEditedRef.current) {
+        setEditableTitle(data.summary.title);
+      }
+    } catch (err) {
+      setStatusMsg(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      isSummarizingRef.current = false;
+      setIsSummarizing(false);
+    }
+  }, []);
+
+  const endSession = useCallback(async () => {
+    if (sessionEndedRef.current) return;
+    sessionEndedRef.current = true;
+
+    if (summaryIntervalRef.current) {
+      clearInterval(summaryIntervalRef.current);
+      summaryIntervalRef.current = null;
+    }
+    cleanup();
+    dgConnRef.current?.requestClose();
+    dgConnRef.current = null;
+
+    if (transcriptBufferRef.current.isEmpty()) {
+      setConnState("done");
+      setStatusMsg("");
+      setIsSummarizing(false);
+      return;
+    }
+
+    setConnState("summarizing");
+    await runSummary("final");
+    setConnState("done");
+  }, [cleanup, runSummary]);
 
   const startRecording = useCallback(async () => {
     setConnState("connecting");
@@ -171,7 +206,12 @@ export function MeetingRoom() {
     setViewingEntry(null);
     setCurrentMeetingId(crypto.randomUUID());
     savedRef.current = false;
-    // Preserve a name the user typed before clicking Record; otherwise clear
+    sessionEndedRef.current = false;
+    isSummarizingRef.current = false;
+    transcriptBufferRef.current = new TranscriptBuffer();
+    prevSummaryRef.current = null;
+    summarizedUpToRef.current = 0;
+
     const preName = editableTitleRef.current.trim();
     setEditableTitle(preName);
     titleEditedRef.current = preName.length > 0;
@@ -187,55 +227,88 @@ export function MeetingRoom() {
       audioCtxRef.current = ctx;
       await ctx.audioWorklet.addModule("/audio-processor.js");
 
-      setStatusMsg("Connecting to server…");
-      const ws = new WebSocket(`ws://${window.location.host}/ws`);
-      wsRef.current = ws;
-      ws.binaryType = "arraybuffer";
+      setStatusMsg("Connecting to Deepgram…");
+      const tokenRes = await fetch("/api/deepgram-token");
+      const tokenData = await tokenRes.json();
+      if (!tokenRes.ok) throw new Error(tokenData.error || "Failed to get Deepgram token");
 
-      ws.onmessage = (e) => {
-        if (typeof e.data === "string") handleServerMessage(e.data);
-      };
-      ws.onerror = (e) => {
-        console.error("[MeetingRoom] WebSocket error", e);
-        setConnState("error");
-        setStatusMsg("WebSocket connection failed");
-      };
-      ws.onclose = () => {
-        setConnState((s) => (s === "done" ? s : "idle"));
-      };
+      const dg = createClient(tokenData.key);
+      const connection = dg.listen.live({
+        model: "nova-2",
+        language: "en-US",
+        smart_format: true,
+        interim_results: true,
+        utterance_end_ms: 1000,
+        vad_events: true,
+        encoding: "linear16",
+        sample_rate: SAMPLE_RATE,
+        channels: 1,
+      });
+      dgConnRef.current = connection;
 
-      await new Promise<void>((resolve, reject) => {
-        ws.onopen = () => resolve();
-        setTimeout(() => reject(new Error("WS timeout")), 5000);
+      connection.on(LiveTranscriptionEvents.Open, () => {
+        setConnState("recording");
+        setStatusMsg("");
+        summaryIntervalRef.current = setInterval(
+          () => runSummary("incremental"),
+          SUMMARY_INTERVAL_MS
+        );
       });
 
-      setStatusMsg("Starting transcription…");
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      connection.on(LiveTranscriptionEvents.Transcript, (data: any) => {
+        const alt = data?.channel?.alternatives?.[0];
+        if (!alt?.transcript?.trim()) return;
+
+        const text: string = alt.transcript;
+        const isFinal: boolean = data.is_final ?? false;
+
+        if (isFinal) {
+          transcriptBufferRef.current.addFinal(text);
+          setLines((prev) => [...prev, { id: prev.length, text }]);
+          setInterim("");
+          setWordCount(transcriptBufferRef.current.getWordCount());
+        } else {
+          transcriptBufferRef.current.updateInterim(text);
+          setInterim(text);
+        }
+      });
+
+      connection.on(LiveTranscriptionEvents.UtteranceEnd, () => {
+        transcriptBufferRef.current.clearInterim();
+        setInterim("");
+      });
+
+      connection.on(LiveTranscriptionEvents.Error, (err: Error) => {
+        console.error("[MeetingRoom] Deepgram error", err);
+        setStatusMsg(`Error: ${err.message}`);
+      });
+
+      connection.on(LiveTranscriptionEvents.Close, () => {
+        endSession().catch(console.error);
+      });
+
       const source = ctx.createMediaStreamSource(stream);
       const worklet = new AudioWorkletNode(ctx, "audio-processor");
       workletNodeRef.current = worklet;
 
       worklet.port.onmessage = (e: MessageEvent<ArrayBuffer>) => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(e.data);
+        dgConnRef.current?.send(e.data);
       };
 
       source.connect(worklet);
       worklet.connect(ctx.destination);
-
-      ws.send(JSON.stringify({ type: "start", sampleRate: SAMPLE_RATE }));
     } catch (err) {
       console.error("[MeetingRoom] startRecording error:", err);
       setConnState("error");
       setStatusMsg(err instanceof Error ? err.message : "Failed to start recording");
       cleanup();
     }
-  }, [handleServerMessage, cleanup]);
+  }, [endSession, runSummary, cleanup]);
 
   const stopRecording = useCallback(() => {
-    setConnState("summarizing");
-    setStatusMsg("Finishing…");
-    wsRef.current?.send(JSON.stringify({ type: "stop" }));
-    cleanup();
-  }, [cleanup]);
+    endSession().catch(console.error);
+  }, [endSession]);
 
   function handleNewMeeting() {
     editableTitleRef.current = "";
@@ -371,7 +444,7 @@ export function MeetingRoom() {
         </div>
       )}
 
-      {/* Banner area — grid animation prevents layout jump when banners appear/disappear */}
+      {/* Banner area */}
       {(() => {
         const banner = viewingEntry ? "viewing"
           : connState === "done" ? "done"
