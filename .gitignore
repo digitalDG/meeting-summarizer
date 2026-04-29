@@ -12,6 +12,7 @@ out/
 
 # build output
 dist/
+dist-server/
 
 # TypeScript build info
 tsconfig.tsbuildinfo
